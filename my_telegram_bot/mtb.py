@@ -5,6 +5,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # Bot Token from BotFather
 TOKEN = '7327334035:AAFn8lBKph9MYJSL5C6jtYV5vHFHvfBfi3A'
+TARGET_CHAT_ID="7281421323"
 
 # Enable logging
 logging.basicConfig(
@@ -25,6 +26,14 @@ AD_REGEX_PATTERNS = [
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a welcome message when the bot is started."""
     await update.message.reply_text('Hello! I am an anti-ad bot. I will remove any ads from this group.')
+
+async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Get the chat ID of the current group."""
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(f'This group chat ID is: {chat_id}')
+
+# 启动或停止消息转发的函数
+
 
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Check incoming messages for ads and kick users if ads are found."""
@@ -57,13 +66,15 @@ def main() -> None:
 
     # on different commands - answer in Telegram
     application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('get_chat_id', get_chat_id))
 
-    # on non-command messages - check for ads
+
+    # on non-command messages - check for ads and forward if forwarding is enabled
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_message))
+
 
     # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
-
