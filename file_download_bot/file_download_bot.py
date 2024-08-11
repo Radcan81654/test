@@ -5,12 +5,12 @@ import aria2p
 from telegram import Update  # pyhton3需要升级到 3.7版本以上
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-ARIA2_RPC_IP = "http://123.56.166.61"
+ARIA2_RPC_IP = "http://57.154.66.147"
 ARIA2_RPC_PORT = 6800
-ARIA2_RPC_SECRET = "lgd.chalice.taobao"
+ARIA2_RPC_SECRET = "mysecret"
 BOT_TOKEN = "7327334035:AAFn8lBKph9MYJSL5C6jtYV5vHFHvfBfi3A"
-TORRENTS_TMP_DIR = "/root/bot_torrents"  # 定义种子文件会被下载到这个中间路径
-DOWNLOAD_DIR = "/root/downloads"  # 根据(磁力)链接/种子文件下载好的文件默认存放的目录
+TORRENTS_TMP_DIR = "/home/ubuntu/bot_torrents"  # 定义种子文件会被下载到这个中间路径
+DOWNLOAD_DIR = "/home/ubuntu/downloads"  # 根据(磁力)链接/种子文件下载好的文件默认存放的目录
 FILE_SIZE_LIMIT = 2147483648  # 2gb的字节数
 # 最大允许的下载时间，超过的话就自动停止
 
@@ -87,6 +87,7 @@ async def the_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     while True:
         if await my_is_complete(download):
+
             await update.message.reply_text("Download complete")
             await send_module(update, context, download)
             break
@@ -115,3 +116,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
