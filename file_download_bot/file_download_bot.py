@@ -1,4 +1,8 @@
 import os
+import zipfile
+import aiofiles
+from telegram import Bot
+from telegram.error import NetworkError
 import asyncio
 import aria2p.client
 from aria2p.downloads import Download
@@ -15,8 +19,7 @@ ARIA2_RPC_PORT = 6800
 ARIA2_RPC_SECRET = "mysecret"  # 替换为你的 Aria2 RPC 密钥
 BOT_TOKEN = "7327334035:AAFn8lBKph9MYJSL5C6jtYV5vHFHvfBfi3A"
 TORRENTS_TMP_DIR = "/home/ubuntu/bot_torrents"  # 定义种子文件会被下载到这个中间路径
-DOWNLOAD_DIR = "/home/ubuntu/downloads"  # 根据(磁力)链接/种子文件下载好的文件默认存放的目录
-FILE_SIZE_LIMIT = 2147483648  # 2gb的字节数
+FILE_SIZE_LIMIT = 524288000  # 500m      #2147483648  # 2gb的字节数
 WRITETIME_OUT = 1200.0
 CONNECTTIME_OUT = 1200.0
 READTIME_OUT = 1200.0
@@ -45,17 +48,56 @@ async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ###########################################################################
 # 文件发送模块
 
+async def split_file(file_path, part_size):
+    """将大文件分割成多个小于等于 part_size 的压缩包"""
+    file_size = os.path.getsize(file_path)
+    base_filename = os.path.basename(file_path)
+    part_number = 1
+    parts = []
+
+    async with aiofiles.open(file_path, 'rb') as src_file:
+        while True:
+            chunk = await src_file.read(part_size)
+            if not chunk:
+                break
+            part_filename = f"{base_filename}.part{part_number}.zip"
+            parts.append(part_filename)
+            with zipfile.ZipFile(part_filename, 'w', zipfile.ZIP_DEFLATED) as part_file:
+                part_file.writestr(base_filename, chunk)
+            part_number += 1
+
+    return parts
+
 
 async def send_module(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
-    ##问题是一方面得确实下载完，另一方面最好检测一下大小是不是能对上，对的上的话就可以发了
-    while await my_is_complete(update, context, download):
-        await update.message.reply_text("Download complete")
-        target_id = update.message.chat_id
-        download_file_path = os.path.join(DOWNLOAD_DIR, download.name)  # 确保是实例属性
-        await context.bot.send_document(chat_id=target_id, document=open(download_file_path, 'rb'))
-        break
-    # 新的问题是发送文件的时间目前来看远远大于下载文件所花费的时间
-    await asyncio.sleep(5)
+    downloaded_filename = os.path.join(download.dir, download.name)
+    file_size = os.path.getsize(downloaded_filename)
+    chat_id = update.effective_chat.id
+
+    big_file_limit = 45 * 1024 * 1024  # 45 MB
+
+    try:
+        if file_size <= big_file_limit:
+            # 使用标准的 open 函数而不是 aiofiles
+            with open(downloaded_filename, 'rb') as file:
+                await context.bot.send_document(chat_id=chat_id, document=file)
+        else:
+            part_size = big_file_limit - (1 * 1024 * 1024)
+            parts = await split_file(downloaded_filename, part_size)
+
+            for part in parts:
+                with open(part, 'rb') as file:
+                    await context.bot.send_document(chat_id=chat_id, document=file)
+                os.remove(part)  # 发送后删除压缩包
+
+            await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
+    except NetworkError as e:
+        await context.bot.send_message(chat_id=chat_id, text=f"Failed sending: {str(e)}")
+
+
+# 示例使用
+# application = Application.builder().token('YOUR_TELEGRAM_BOT_TOKEN').build()
+# await send_file(application.bot, chat_id=123456789, downloaded_filename='path/to/downloaded_filename')
 
 
 async def my_is_complete(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
@@ -72,11 +114,13 @@ async def download_module(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if message.startswith("http://") or message.startswith("https://"):
         # 处理 URI
         download = aria2.add(message)[0]  # 此处返回被创建出来的文件,理论上可以添加多个
+        context.user_data['download_gid'] = download.gid
         await update.message.reply_text(f"Added URI download: {download.name}")
 
     elif message.startswith("magnet:"):
         # 处理磁力链接
         download = aria2.add(message)[0]
+        context.user_data['download_gid'] = download.gid
         await update.message.reply_text(f"Added Magnet download: {download.name}")
 
     elif update.message.document and update.message.document.file_name.endswith(".torrent"):
@@ -85,6 +129,7 @@ async def download_module(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         file_path = f"{TORRENTS_TMP_DIR}/{update.message.document.file_name}"
         await file.download_to_drive(file_path)  # 把种子文件保存到本地路径
         download = aria2.add_torrent(file_path)  # 下载文件
+        context.user_data['download_gid'] = download.gid
         await update.message.reply_text(f"Added Torrent download: {download.name}")
 
     else:
@@ -123,22 +168,61 @@ async def the_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await send_module(update, context, dl)
 
 
+########################################################################3
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a welcome message when the bot is started."""
+    await update.message.reply_text('Hello! Send me a BT seed file / link ')
+
+
+async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a help message when the bot is asked for help."""
+    await update.message.reply_text(
+        'Hello! Send me a BT seed file / link ,I will send you their corresponding files, the upper limit is 500M')
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """取消下载并清除中间文件"""
+    chat_id = update.effective_chat.id
+    try:
+        # 获取当前的所有下载任务
+        active_downloads = aria2.get_downloads()
+
+        # 遍历所有下载任务并取消
+        for download in active_downloads:
+            mc.remove(download.gid)
+            await update.message.reply_text(f"Download {download.name} has been cancelled.")
+
+        # 清理中间文件
+        base_filename = ""
+        if update.message.document:
+            base_filename = os.path.basename(update.message.document.file_name)
+        elif update.message.text:
+            base_filename = os.path.basename(update.message.text)
+
+        # 找到并删除所有的part文件
+        for part_file in os.listdir('.'):
+            if part_file.startswith(base_filename) and part_file.endswith(".zip"):
+                os.remove(part_file)
+                await update.message.reply_text(f"Removed temporary file: {part_file}")
+
+    except Exception as e:
+        await update.message.reply_text(f"Failed to cancel download: {str(e)}")
+
+
+#
+commands = [
+    BotCommand("start", "Start interacting with the bot"),
+    BotCommand("help", "Get help"),
+    BotCommand("cancel", "Cancel download")
+]
+
+
+# cancel这个函数最好是能把当前目录下残留的中间文件(parts)全部清除掉
+
+
 def main() -> None:
     """Run the bot."""
-    # application = ApplicationBuilder().token(BOT_TOKEN).build()#可用的版本
-    ########################################################################
-    # 测试
-    # 设置超时和其他参数
-
-    # 创建 HTTPXRequest 对象
-    # media_write_timeout=300.0#时间根本没够用
-    # http_version='1.1'时报错为raise NetworkError(f"httpx.{err.__class__.__name__}: {err}") from err telegram.error.NetworkError: httpx.ReadError:
-    # http_version='2'时报错为telegram.error.NetworkError: httpx.RemoteProtocolError: <ConnectionTerminated error_code:ErrorCodes.NO_ERROR, last_stream_id:3, additional_data:None>
-    request = HTTPXRequest(http_version='1.1', media_write_timeout=1200.0, read_timeout=READTIME_OUT,
-                           write_timeout=WRITETIME_OUT, connect_timeout=CONNECTTIME_OUT)
-
-    # 配置 Application 对象
-    application = ApplicationBuilder().token(BOT_TOKEN).request(request).build()
+    application = ApplicationBuilder().token(BOT_TOKEN).media_write_timeout(300.0).build()  # 可用的版本
 
     ##########################################
     # on different commands - answer in Telegram
@@ -154,3 +238,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
