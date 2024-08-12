@@ -1,5 +1,6 @@
 import os
 import asyncio
+import aria2p.client
 from aria2p.downloads import Download
 import aria2p
 from telegram import Update  # pyhton3需要升级到 3.7版本以上
@@ -13,15 +14,13 @@ TORRENTS_TMP_DIR = "/home/ubuntu/bot_torrents"  # 定义种子文件会被下载
 DOWNLOAD_DIR = "/home/ubuntu/downloads"  # 根据(磁力)链接/种子文件下载好的文件默认存放的目录
 FILE_SIZE_LIMIT = 2147483648  # 2gb的字节数
 # 最大允许的下载时间，超过的话就自动停止
-
-
-aria2 = aria2p.API(
-    aria2p.Client(
-        host=ARIA2_RPC_IP,  # 替换为你的 Aria2 服务器地址
-        port=ARIA2_RPC_PORT,
-        secret=ARIA2_RPC_SECRET  # 替换为你的 Aria2 RPC 密钥
-    )
+mc = aria2p.Client(
+    host=ARIA2_RPC_IP,  # 替换为你的 Aria2 服务器地址
+    port=ARIA2_RPC_PORT,
+    secret=ARIA2_RPC_SECRET  # 替换为你的 Aria2 RPC 密钥
 )
+
+aria2 = aria2p.API(mc)
 
 
 async def get_name(downloads: Download):
@@ -39,8 +38,10 @@ async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ###########################################################################
 # 文件发送模块
 async def send_module(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
+    ##问题是一方面得确实下载完，另一方面最好检测一下大小是不是能对上，对的上的话就可以发了
     target_id = update.message.chat_id
     download_file_path = os.path.join(DOWNLOAD_DIR, download.name)  # 确保是实例属性
+
     await context.bot.send_document(chat_id=target_id, document=open(download_file_path, 'rb'))
 
 
@@ -50,13 +51,20 @@ async def send_module(update: Update, context: ContextTypes.DEFAULT_TYPE, downlo
 
 ###########################################################################
 # 最终执行的模块
-async def my_is_complete(downloads: Download):
-    return Download.is_complete
+
+async def my_is_complete(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
+    id = download.gid
+
+    sts = mc.tell_status(id, ['status'])
+    print(sts)
+    if sts['status'] == 'complete':
+        return True
+    return False
 
 
 async def the_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message.text
-
+    #download= None#解决报错
     if message.startswith("http://") or message.startswith("https://"):
         # 处理 URI
         download = aria2.add(message)[0]  # 此处返回被创建出来的文件,理论上可以添加多个
@@ -86,8 +94,7 @@ async def the_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     ###########文件下载中，以下部分开始考虑消息通知与文件发送
 
     while True:
-        if await my_is_complete(download):
-
+        if await my_is_complete(update, context, download):
             await update.message.reply_text("Download complete")
             await send_module(update, context, download)
             break
