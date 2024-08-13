@@ -7,10 +7,11 @@ import asyncio
 import aria2p.client
 from aria2p.downloads import Download
 import aria2p
+from queue import Queue
 import time
 import httpx
-from telegram import Update, BotCommand  # pyhton3需要升级到 3.7版本以上
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, BotCommand, MenuButtonCommands  # pyhton3需要升级到 3.7版本以上
+from telegram.ext import Updater, ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from httpx import Timeout
 from telegram.request import HTTPXRequest
 
@@ -209,17 +210,18 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Failed to cancel download: {str(e)}")
 
 
-#
-commands = [
-    BotCommand("start", "Start interacting with the bot"),
-    BotCommand("help", "Get help"),
-    BotCommand("cancel", "Cancel download")
-]
+###################################################
+rbot = Bot(token=BOT_TOKEN)
+uq = Queue()
+updater = Updater(bot=rbot, update_queue=uq)
 
 
-# cancel这个函数最好是能把当前目录下残留的中间文件(parts)全部清除掉
+def set_menu_button():
+    # 这个也是异步
+    rbot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
+###################
 def main() -> None:
     """Run the bot."""
     application = ApplicationBuilder().token(BOT_TOKEN).media_write_timeout(300.0).build()  # 可用的版本
@@ -227,11 +229,13 @@ def main() -> None:
     ##########################################
     # on different commands - answer in Telegram
     application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('help', start))
+    application.add_handler(CommandHandler('cancel', start))
 
     # on non-command messages - check for ads
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, the_module))  # 检测发送信息
     application.add_handler(MessageHandler(filters.Document.ALL, the_module))  # 检测用户发送文件
-
+    set_menu_button()
     # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
