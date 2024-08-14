@@ -44,6 +44,24 @@ async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a welcome message when the bot is started."""
     await update.message.reply_text('I will download the file for you and send it to this chat. \nDue to platform limitations, I can only send it in parts of less than 100MB each.\nI will download the file for you and send it to this chat. Due to platform limitations, I can only send it in parts of less than 100MB each\nIf the progress is proceeding normally, I will send you progress updates. If the download fails, you will also receive a notification') 
 
+async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cid=update.effective_chat.id
+    pgid=context.user_data.get('download_gid')
+    try:
+        # 获取当前的所有下载任务
+        active_downloads = aria2.get_downloads()
+        for dl in active_downloads:
+            if dl.gid==pgid:
+                pl=mc.tell_status(pgid,['totalLength','completedLength'])
+                output=int(pl['completedLength'])/int(pl['totalLength'])
+                await update.message.reply_text(f"Download progress: {round(output*100,2)}%")
+    except Exception as e:
+        await update.message.reply_text(f"Failed to cancel download: {str(e)}")
+    
+
+
+
+###################
 
 async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Get the chat ID of the current group."""
@@ -133,6 +151,7 @@ async def my_is_complete(update: Update, context: ContextTypes.DEFAULT_TYPE, dow
         id = download.gid
         sts = mc.tell_status(id, ['status'])
         print(sts)
+        await asyncio.sleep(3)
         return sts['status'] 
         
     except Exception as e:
@@ -174,13 +193,16 @@ async def download_module(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def report_module(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download) :
     try:
-        judge=[0,0,0,0]
+        judge=[0,0,0,0,0]
         while await my_is_complete(update, context, download)=='active':
             pl = mc.tell_status(download.gid, ['totalLength', 'completedLength'])
-            output = int(pl['completedLength']) / int(pl['totalLength'])
+            output=0
+            if int(pl['totalLength']) != 0 :
+                output = int(pl['completedLength']) / int(pl['totalLength'])
             
             print(output)
             if output == 1.0:
+                await update.message.reply_text(f"Download complete")
                 break
             elif output >= 0.8 and judge[4]==0:
                 judge[4]=1
@@ -194,12 +216,14 @@ async def report_module(update: Update, context: ContextTypes.DEFAULT_TYPE, down
             elif output >= 0.2 and judge[1]==0:
                 judge[1]=1
                 await update.message.reply_text(f"Download progress: {round(output*100,2)}%")
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
         if await my_is_complete(update, context, download)=='error':
             await update.message.reply_text(f"Download error")
             return 'error'
         if await my_is_complete(update, context, download)=='complete':
             await update.message.reply_text(f"Download complete")
+
+            return 'complete'
     except Exception as e:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in report module: {str(e)}")
         raise
@@ -221,8 +245,6 @@ async def set_menu_button(bot: Bot) -> None:
 
 
 #####################################################################################################
-# 把事件循环加入到现有逻辑里面的话，产生的报错根本不是(我+chatgpt)能解决的
-# 在另一个线程中运行异步任务
 def run_async_task(loop, bot):
     asyncio.set_event_loop(loop)
     loop.run_until_complete(set_menu_button(bot))
@@ -236,6 +258,8 @@ def main() -> None:
             READTIME_OUT).write_timeout(WRITETIME_OUT).build()
         application.add_handler(CommandHandler('start', start))
         application.add_handler(CommandHandler('help', start))
+        application.add_handler(CommandHandler('progress', progress))
+
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, the_module))
         application.add_handler(MessageHandler(filters.Document.ALL, the_module))
 
