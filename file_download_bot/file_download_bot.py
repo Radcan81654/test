@@ -243,9 +243,9 @@ async def send_module(update: Update, context: ContextTypes.DEFAULT_TYPE, downlo
 async def the_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         dl = await download_module(update, context)
-        flag=await report_module(update, context, dl)
-        if flag=='complete':
-            await send_module(update, context, dl, TMP_BUNDLE_DIR)
+        if dl:
+            asyncio.create_task(report_module(update, context, dl))  # Run report_module asynchronously
+            asyncio.create_task(send_module(update, context, dl, TMP_BUNDLE_DIR))  # Run send_module asynchronously
     except Exception as e:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in the main module: {str(e)}")
 
