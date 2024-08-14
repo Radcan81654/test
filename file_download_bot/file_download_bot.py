@@ -39,6 +39,14 @@ aria2 = aria2p.API(mc)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a welcome message when the bot is started."""
+    #正确的初始化menu菜单的写法
+    commands = [
+        BotCommand("start", "Start the bot"),
+        BotCommand("help", "Get help"),
+        BotCommand("progress", "Check download progress"),
+    ]
+    await rbot.set_my_commands(commands)
+
     await update.message.reply_text('Hello! Send me a BT seed file / link ')
 async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a welcome message when the bot is started."""
@@ -89,57 +97,6 @@ async def split_file(file_path, part_size, output_dir):
             part_number += 1
     return parts
 
-async def send_module(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download, output_dir: str):
-    try:
-        downloaded_filename = os.path.join(download.dir, download.name)
-        chat_id = update.effective_chat.id
-
-        if os.path.isdir(downloaded_filename):
-            # 如果是目录，压缩整个目录
-            zip_filename = f"{download.name}.zip"
-            zip_filepath = os.path.join(output_dir, zip_filename)
-            with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for root, dirs, files in os.walk(downloaded_filename):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, start=downloaded_filename)
-                        zipf.write(file_path, arcname=arcname)
-            # 发送压缩后的文件
-            zip_filesize=os.path.getsize(zip_filename)
-            big_file_limit = 45 * 1024 * 1024  # 45 MB
-            if zip_filesize<=big_file_limit:
-                with open(zip_filename,'rb') as file:
-                    await context.bot.send_document(chat_id=chat_id, document=file)
-            else:
-                part_size = big_file_limit - (1 * 1024 * 1024)
-                parts=await split_file(zip_filename,part_size,output_dir)
-                for part in parts:
-                    with open(part, 'rb') as file:
-                        await context.bot.send_document(chat_id=chat_id, document=file)
-                    os.remove(part)
-                await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
-
-        else:
-            # 如果是文件，直接发送或拆分后发送
-            file_size = os.path.getsize(downloaded_filename)
-            big_file_limit = 45 * 1024 * 1024  # 45 MB
-
-            if file_size <= big_file_limit:
-                with open(downloaded_filename, 'rb') as file:
-                    await context.bot.send_document(chat_id=chat_id, document=file)
-            else:
-                part_size = big_file_limit - (1 * 1024 * 1024)
-                parts = await split_file(downloaded_filename, part_size, output_dir)
-                for part in parts:
-                    with open(part, 'rb') as file:
-                        await context.bot.send_document(chat_id=chat_id, document=file)
-                    os.remove(part)
-
-            await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
-    except NetworkError as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"Failed sending: {str(e)}")
-    except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"An error occurred: {str(e)}")
 
 
 
@@ -196,6 +153,7 @@ async def report_module(update: Update, context: ContextTypes.DEFAULT_TYPE, down
         judge=[0,0,0,0,0]
         while await my_is_complete(update, context, download)=='active':
             pl = mc.tell_status(download.gid, ['totalLength', 'completedLength'])
+            await asyncio.sleep(3)
             output=0
             if int(pl['totalLength']) != 0 :
                 output = int(pl['completedLength']) / int(pl['totalLength'])
@@ -228,6 +186,59 @@ async def report_module(update: Update, context: ContextTypes.DEFAULT_TYPE, down
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in report module: {str(e)}")
         raise
 
+async def send_module(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download, output_dir: str):
+    try:
+        downloaded_filename = os.path.join(download.dir, download.name)
+        chat_id = update.effective_chat.id
+
+        if os.path.isdir(downloaded_filename):
+            # 如果是目录，压缩整个目录
+            zip_filename = f"{download.name}.zip"
+            zip_filepath = os.path.join(output_dir, zip_filename)
+            with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(downloaded_filename):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, start=downloaded_filename)
+                        zipf.write(file_path, arcname=arcname)
+            # 发送压缩后的文件
+            zip_filesize=os.path.getsize(zip_filename)
+            big_file_limit = 45 * 1024 * 1024  # 45 MB
+            if zip_filesize<=big_file_limit:
+                with open(zip_filename,'rb') as file:
+                    await context.bot.send_document(chat_id=chat_id, document=file)
+            else:
+                part_size = big_file_limit - (1 * 1024 * 1024)
+                parts=await split_file(zip_filename,part_size,output_dir)
+                for part in parts:
+                    with open(part, 'rb') as file:
+                        await context.bot.send_document(chat_id=chat_id, document=file)
+                    os.remove(part)
+                await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
+
+        else:
+            # 如果是文件，直接发送或拆分后发送
+            file_size = os.path.getsize(downloaded_filename)
+            big_file_limit = 45 * 1024 * 1024  # 45 MB
+
+            if file_size <= big_file_limit:
+                with open(downloaded_filename, 'rb') as file:
+                    await context.bot.send_document(chat_id=chat_id, document=file)
+            else:
+                part_size = big_file_limit - (1 * 1024 * 1024)
+                parts = await split_file(downloaded_filename, part_size, output_dir)
+                for part in parts:
+                    with open(part, 'rb') as file:
+                        await context.bot.send_document(chat_id=chat_id, document=file)
+                    os.remove(part)
+
+            await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
+    except NetworkError as e:
+        await context.bot.send_message(chat_id=chat_id, text=f"Failed sending: {str(e)}")
+    except Exception as e:
+        await context.bot.send_message(chat_id=chat_id, text=f"An error occurred: {str(e)}")
+
+
 
 async def the_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -239,18 +250,12 @@ async def the_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in the main module: {str(e)}")
 
 
-
-async def set_menu_button(bot: Bot) -> None:
-    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-
-
-#####################################################################################################
-def run_async_task(loop, bot):
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(set_menu_button(bot))
+rbot = Bot(token=BOT_TOKEN)
+uq = Queue()
+updater = Updater(bot=rbot, update_queue=uq)
 
 
-##########################################################################################################
+
 
 def main() -> None:
     try:
@@ -262,10 +267,7 @@ def main() -> None:
 
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, the_module))
         application.add_handler(MessageHandler(filters.Document.ALL, the_module))
-
-        loop = asyncio.new_event_loop()
-        threading.Thread(target=run_async_task, args=(loop, application.bot)).start()
-
+        
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         print(f"Failed to start the bot: {str(e)}")
