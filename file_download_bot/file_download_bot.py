@@ -15,13 +15,15 @@ from telegram import Update, BotCommand, MenuButtonCommands
 from telegram.ext import Updater, ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from httpx import Timeout
 from telegram.request import HTTPXRequest
-
+import shutil
+import re
 ARIA2_RPC_IP = "http://57.154.66.147"  # 替换为你的 Aria2 服务器地址
 ARIA2_RPC_PORT = 6800
 ARIA2_RPC_SECRET = "mysecret"  # 替换为你的 Aria2 RPC 密钥
 BOT_TOKEN = "7327334035:AAFn8lBKph9MYJSL5C6jtYV5vHFHvfBfi3A"
 TORRENTS_TMP_DIR = "/home/ubuntu/bot_torrents"  # 定义种子文件会被下载到这个中间路径
 TMP_BUNDLE_DIR = '/home/ubuntu/tmp_bund'
+METADATA_TMP_DIR='home/ubuntu/metadata_bund'
 #FILE_SIZE_LIMIT = 524288000  # 500M
 FILE_SIZE_LIMIT = 500000000000  # 500M
 
@@ -115,7 +117,7 @@ async def my_is_complete(update: Update, context: ContextTypes.DEFAULT_TYPE, dow
         await context.bot.send_message(chat_id=update.effective_chat.id,text=f"Error checking download status: {str(e)}")
         raise
 
-
+############得改成返回 list的格式，把每个部分都下载
 async def download_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Download:
     try:
         message = update.message.text
@@ -160,7 +162,7 @@ async def report_module(update: Update, context: ContextTypes.DEFAULT_TYPE, down
             
             print(output)
             if output == 1.0:
-                await update.message.reply_text(f"Download complete")
+                #await update.message.reply_text(f"Download complete")
                 break
             elif output >= 0.8 and judge[4]==0:
                 judge[4]=1
@@ -186,53 +188,99 @@ async def report_module(update: Update, context: ContextTypes.DEFAULT_TYPE, down
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in report module: {str(e)}")
         raise
 
+
+
+
+
+
+
+
+##################得针对每一个dl_list分别发送
 async def send_module(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download, output_dir: str):
     try:
-        downloaded_filename = os.path.join(download.dir, download.name)
-        chat_id = update.effective_chat.id
+        while True:
+            if await my_is_complete(update,context,download)=='complete':
+                downloaded_filename = os.path.join(download.dir, download.name)
+                chat_id = update.effective_chat.id
+                fl=download.files[0].is_metadata
+                meta_download_name=None
+                if fl:
+                    #对于metadata
+                    meta_download_name=download.name.removeprefix('[METADATA]')#目录名
+                    metadata_downloaded_filename = os.path.join(download.dir, meta_download_name)#目录所在的完整路径名
+                    zip_filename = f"{metadata_downloaded_filename}.zip"
+                    zip_filepath = os.path.join(output_dir, zip_filename)
+                    #把这个目录里的文件全压缩成一个文件，测试无误
+                    with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        for root, dirs, files in os.walk(metadata_downloaded_filename):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                arcname = os.path.relpath(file_path, start=metadata_downloaded_filename)
+                                zipf.write(file_path, arcname=arcname)
 
-        if os.path.isdir(downloaded_filename):
-            # 如果是目录，压缩整个目录
-            zip_filename = f"{download.name}.zip"
-            zip_filepath = os.path.join(output_dir, zip_filename)
-            with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for root, dirs, files in os.walk(downloaded_filename):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, start=downloaded_filename)
-                        zipf.write(file_path, arcname=arcname)
-            # 发送压缩后的文件
-            zip_filesize=os.path.getsize(zip_filename)
-            big_file_limit = 45 * 1024 * 1024  # 45 MB
-            if zip_filesize<=big_file_limit:
-                with open(zip_filename,'rb') as file:
-                    await context.bot.send_document(chat_id=chat_id, document=file)
+
+
+                    #发送压缩后的文件
+                    zip_filesize=os.path.getsize(zip_filename)
+                    big_file_limit = 45 * 1024 * 1024  # 45 MB
+                    if zip_filesize<=big_file_limit:
+                        with open(zip_filename,'rb') as file:
+                            await context.bot.send_document(chat_id=chat_id, document=file)
+                    else:
+                        part_size = big_file_limit - (1 * 1024 * 1024)
+                        parts=await split_file(zip_filename,part_size,output_dir)
+                        for part in parts:
+                            with open(part, 'rb') as file:
+                                await context.bot.send_document(chat_id=chat_id, document=file)
+                            os.remove(part)
+                        await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
+
+
+                elif os.path.isdir(downloaded_filename):
+                    
+                    # 如果是目录，压缩整个目录
+                    zip_filename = f"{download.name}.zip"
+                    zip_filepath = os.path.join(output_dir, zip_filename)
+                    with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        for root, dirs, files in os.walk(downloaded_filename):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                arcname = os.path.relpath(file_path, start=downloaded_filename)
+                                zipf.write(file_path, arcname=arcname)
+                    # 发送压缩后的文件
+                    zip_filesize=os.path.getsize(zip_filename)
+                    big_file_limit = 45 * 1024 * 1024  # 45 MB
+                    if zip_filesize<=big_file_limit:
+                        with open(zip_filename,'rb') as file:
+                            await context.bot.send_document(chat_id=chat_id, document=file)
+                    else:
+                        part_size = big_file_limit - (1 * 1024 * 1024)
+                        parts=await split_file(zip_filename,part_size,output_dir)
+                        for part in parts:
+                            with open(part, 'rb') as file:
+                                await context.bot.send_document(chat_id=chat_id, document=file)
+                            os.remove(part)
+                        await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
+                else:
+                    # 如果是文件，直接发送或拆分后发送
+                    file_size = os.path.getsize(downloaded_filename)
+                    big_file_limit = 45 * 1024 * 1024  # 45 MB
+
+                    if file_size <= big_file_limit:
+                        with open(downloaded_filename, 'rb') as file:
+                            await context.bot.send_document(chat_id=chat_id, document=file)
+                    else:
+                        part_size = big_file_limit - (1 * 1024 * 1024)
+                        parts = await split_file(downloaded_filename, part_size, output_dir)
+                        for part in parts:
+                            with open(part, 'rb') as file:
+                                await context.bot.send_document(chat_id=chat_id, document=file)
+                            os.remove(part)
+
+                    await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
+                break
             else:
-                part_size = big_file_limit - (1 * 1024 * 1024)
-                parts=await split_file(zip_filename,part_size,output_dir)
-                for part in parts:
-                    with open(part, 'rb') as file:
-                        await context.bot.send_document(chat_id=chat_id, document=file)
-                    os.remove(part)
-                await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
-
-        else:
-            # 如果是文件，直接发送或拆分后发送
-            file_size = os.path.getsize(downloaded_filename)
-            big_file_limit = 45 * 1024 * 1024  # 45 MB
-
-            if file_size <= big_file_limit:
-                with open(downloaded_filename, 'rb') as file:
-                    await context.bot.send_document(chat_id=chat_id, document=file)
-            else:
-                part_size = big_file_limit - (1 * 1024 * 1024)
-                parts = await split_file(downloaded_filename, part_size, output_dir)
-                for part in parts:
-                    with open(part, 'rb') as file:
-                        await context.bot.send_document(chat_id=chat_id, document=file)
-                    os.remove(part)
-
-            await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
+                await asyncio.sleep(5)
     except NetworkError as e:
         await context.bot.send_message(chat_id=chat_id, text=f"Failed sending: {str(e)}")
     except Exception as e:
@@ -245,8 +293,13 @@ async def the_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         dl = await download_module(update, context)
         if dl:
             asyncio.create_task(report_module(update, context, dl))  # Run report_module asynchronously
-            asyncio.create_task(send_module(update, context, dl, TMP_BUNDLE_DIR))  # Run send_module asynchronously
+            asyncio.create_task(send_module(update, context, dl, TMP_BUNDLE_DIR))
+
+
+
     except Exception as e:
+
+
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in the main module: {str(e)}")
 
 
@@ -262,7 +315,7 @@ def main() -> None:
         application = ApplicationBuilder().token(BOT_TOKEN).media_write_timeout(300.0).read_timeout(
             READTIME_OUT).write_timeout(WRITETIME_OUT).build()
         application.add_handler(CommandHandler('start', start))
-        application.add_handler(CommandHandler('help', start))
+        application.add_handler(CommandHandler('help', help))
         application.add_handler(CommandHandler('progress', progress))
 
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, the_module))
