@@ -210,21 +210,23 @@ async def send_module(update: Update, context: ContextTypes.DEFAULT_TYPE, downlo
     except Exception as e:
         await update.message.reply_text(f"An error occurred while sending: {str(e)}")
 
+import subprocess
+
+def delete_with_sudo(path):
+    try:
+        # 使用sudo执行删除命令
+        if os.path.isdir(path):
+            subprocess.run(['sudo', 'rm', '-rf', path], check=True)
+        elif os.path.isfile(path):
+            subprocess.run(['sudo', 'rm', '-f', path], check=True)
+        print(f"Successfully deleted: {path}")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to delete {path}: {e}")
+
 async def handle_magnet_download(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
     try:
         if download.is_metadata:
             # 获取下载的目录或文件路径
-            download_file_path = os.path.join(download.dir, download.name)
-            
-            # 检查并删除已存在的文件或目录
-            if os.path.exists(download_file_path):
-                await update.message.reply_text(f"Found existing download content for {download.name}. Deleting it before starting new download...")
-                
-                if os.path.isdir(download_file_path):
-                    shutil.rmtree(download_file_path)  # 删除整个目录
-                elif os.path.isfile(download_file_path):
-                    os.remove(download_file_path)  # 删除文件
-
             await update.message.reply_text("Downloading metadata...")
             while not download.is_complete:
                 await asyncio.sleep(1)
@@ -236,8 +238,26 @@ async def handle_magnet_download(update: Update, context: ContextTypes.DEFAULT_T
                 context.user_data['download_gid'] = real_download.gid
 
                 await update.message.reply_text(f"Metadata downloaded. Starting actual download: {real_download.name}")
-                
-                asyncio.create_task(report_module(update, context, real_download))
+
+                # 检查实际下载任务的状态
+                download_status = await my_is_complete(update, context, real_download)
+
+                if download_status == 'error':
+                    real_download_path = os.path.join(real_download.dir, real_download.name)
+                    
+                    # 检查并删除已存在的文件或目录
+                    if os.path.exists(real_download_path):
+                        await update.message.reply_text(f"Download failed with error. Found existing download content for {real_download.name}. Deleting it and retrying...")
+                        
+                        # 使用带有 sudo 权限的删除操作
+                        delete_with_sudo(real_download_path)
+
+                    # 重新添加下载任务
+                    new_download = aria2.add_magnet(context.user_data['magnet_uri'])
+                    context.user_data['download_gid'] = new_download.gid
+                    await handle_magnet_download(update, context, new_download)
+                else:
+                    asyncio.create_task(report_module(update, context, real_download))
             else:
                 await update.message.reply_text("Failed to retrieve real download after metadata.")
         else:
@@ -246,6 +266,8 @@ async def handle_magnet_download(update: Update, context: ContextTypes.DEFAULT_T
     except Exception as e:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in handling magnet download: {str(e)}")
         raise
+
+
 
 
 async def download_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
