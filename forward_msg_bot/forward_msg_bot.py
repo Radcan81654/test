@@ -50,7 +50,9 @@ def main() -> None:
     application.add_handler(CommandHandler('toggle_forwarding_to', toggle_forwarding_to))
 
     # 检查是否启用消息转发
+
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, forward_message_to))
+    application.add_handler(MessageHandler(filters.Document.ALL & ~filters.COMMAND, forward_message_to))
 
     # 运行机器人，直到用户按下 Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)

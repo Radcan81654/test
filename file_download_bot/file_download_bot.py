@@ -3,6 +3,7 @@ import zipfile
 import threading
 import aiofiles
 from telegram import Bot
+from pyrogram import Client
 from telegram.error import NetworkError
 import asyncio
 import aria2p.client
@@ -11,25 +12,23 @@ import aria2p
 from queue import Queue
 import time
 import httpx
-from telegram import Update, BotCommand, MenuButtonCommands
-from telegram.ext import Updater, ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from httpx import Timeout
-from telegram.request import HTTPXRequest
+from telegram import Update, BotCommand
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import shutil
-import re
+import bencodepy
+import subprocess
+import hashlib
+
 ARIA2_RPC_IP = "http://57.154.66.147"  # 替换为你的 Aria2 服务器地址
 ARIA2_RPC_PORT = 6800
 ARIA2_RPC_SECRET = "mysecret"  # 替换为你的 Aria2 RPC 密钥
 BOT_TOKEN = "7327334035:AAFn8lBKph9MYJSL5C6jtYV5vHFHvfBfi3A"
 TORRENTS_TMP_DIR = "/home/ubuntu/bot_torrents"  # 定义种子文件会被下载到这个中间路径
 TMP_BUNDLE_DIR = '/home/ubuntu/tmp_bund'
-METADATA_TMP_DIR='home/ubuntu/metadata_bund'
-#FILE_SIZE_LIMIT = 524288000  # 500M
-FILE_SIZE_LIMIT = 500000000000  # 500M
+BIG_FILE_LIMIT = 2*1024*1024*1024  # 2GB
 
-WRITETIME_OUT = 300.0
-CONNECTTIME_OUT = 300.0
-READTIME_OUT = 300.0
+API_ID = '22556263'
+API_HASH = '1a470fb798c07cb0ad5c8c69485bdd18'
 
 mc = aria2p.Client(
     host=ARIA2_RPC_IP,
@@ -38,53 +37,59 @@ mc = aria2p.Client(
 )
 aria2 = aria2p.API(mc)
 
+rbot = Bot(token=BOT_TOKEN)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a welcome message when the bot is started."""
-    #正确的初始化menu菜单的写法
     commands = [
         BotCommand("start", "Start the bot"),
         BotCommand("help", "Get help"),
         BotCommand("progress", "Check download progress"),
+        BotCommand("upload_progress", "Check upload progress"),
+        BotCommand("get_chat_id", "Get the chat ID of the current chat.")
     ]
     await rbot.set_my_commands(commands)
+    await update.message.reply_text('Hello! Send me a BT seed file / link.')
 
-    await update.message.reply_text('Hello! Send me a BT seed file / link ')
 async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a welcome message when the bot is started."""
-    await update.message.reply_text('I will download the file for you and send it to this chat. \nDue to platform limitations, I can only send it in parts of less than 100MB each.\nI will download the file for you and send it to this chat. Due to platform limitations, I can only send it in parts of less than 100MB each\nIf the progress is proceeding normally, I will send you progress updates. If the download fails, you will also receive a notification') 
+    await update.message.reply_text(
+        'I will download the file for you and send it to this chat. \n'
+        'Due to platform limitations, I can only send it in parts of less than 2GB each.\n'
+        'I will keep you updated on the progress.'
+    )
 
 async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    cid=update.effective_chat.id
-    pgid=context.user_data.get('download_gid')
+    cid = update.effective_chat.id
+    pgid = context.user_data.get('download_gid')
     try:
-        # 获取当前的所有下载任务
         active_downloads = aria2.get_downloads()
         for dl in active_downloads:
-            if dl.gid==pgid:
-                pl=mc.tell_status(pgid,['totalLength','completedLength'])
-                output=int(pl['completedLength'])/int(pl['totalLength'])
-                await update.message.reply_text(f"Download progress: {round(output*100,2)}%")
+            if dl.gid == pgid:
+                pl = mc.tell_status(pgid, ['totalLength', 'completedLength'])
+                output = int(pl['completedLength']) / int(pl['totalLength'])
+                await update.message.reply_text(f"Download progress: {round(output * 100, 2)}%")
     except Exception as e:
-        await update.message.reply_text(f"Failed to cancel download: {str(e)}")
-    
+        await update.message.reply_text(f"Failed to check progress: {str(e)}")
 
+async def upload_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    upload_info = context.user_data.get('upload_progress')
+    if upload_info:
+        await update.message.reply_text(
+            f"Uploading {upload_info['file_name']}: {upload_info['progress']}% completed."
+        )
+    else:
+        await update.message.reply_text("No upload in progress or progress information is not available.")
 
+async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(f'This group chat ID is: {chat_id}')
 
-###################
-
-async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get the chat ID of the current group."""
-    return update.effective_chat.id
-
-
-async def split_file(file_path, part_size, output_dir):
+async def split_file(file_path, part_size):
     file_size = os.path.getsize(file_path)
     base_filename = os.path.basename(file_path)
     part_number = 1
     parts = []
 
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(TMP_BUNDLE_DIR, exist_ok=True)
 
     async with aiofiles.open(file_path, 'rb') as src_file:
         while True:
@@ -92,45 +97,173 @@ async def split_file(file_path, part_size, output_dir):
             if not chunk:
                 break
             part_filename = f"{base_filename}.part{part_number}.zip"
-            part_path = os.path.join(output_dir, part_filename)
+            part_path = os.path.join(TMP_BUNDLE_DIR, part_filename)
             parts.append(part_path)
             with zipfile.ZipFile(part_path, 'w', zipfile.ZIP_DEFLATED) as part_file:
                 part_file.writestr(base_filename, chunk)
             part_number += 1
     return parts
 
-
-
-
-
-
-
 async def my_is_complete(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
     try:
         id = download.gid
-        sts = mc.tell_status(id, ['status'])
-        print(sts)
+        sts = mc.tell_status(id, ['status', 'totalLength', 'completedLength'])
+        print(f'download.name,status-{download.name}:{sts}')
+        
+        if sts['status'] == 'error' and sts['totalLength'] == sts['completedLength']:
+            return 'complete'
+        
         await asyncio.sleep(3)
-        return sts['status'] 
+        return sts['status']
         
     except Exception as e:
-        await context.bot.send_message(chat_id=update.effective_chat.id,text=f"Error checking download status: {str(e)}")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error checking download status: {str(e)}")
         raise
 
-############得改成返回 list的格式，把每个部分都下载
-async def download_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Download:
+async def report_module(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
+    try:
+        judge = [0, 0, 0, 0, 0]
+        while await my_is_complete(update, context, download) == 'active':
+            pl = mc.tell_status(download.gid, ['totalLength', 'completedLength'])
+            await asyncio.sleep(3)
+            output = 0
+            if int(pl['totalLength']) != 0:
+                output = int(pl['completedLength']) / int(pl['totalLength'])
+            print(output)
+            if output == 1.0:
+                break
+            elif output >= 0.8 and judge[4] == 0:
+                judge[4] = 1
+                await update.message.reply_text(f"Download progress: {round(output * 100, 2)}%")
+            elif output >= 0.6 and judge[3] == 0:
+                judge[3] = 1
+                await update.message.reply_text(f"Download progress: {round(output * 100, 2)}%")
+            elif output >= 0.4 and judge[2] == 0:
+                judge[2] = 1
+                await update.message.reply_text(f"Download progress: {round(output * 100, 2)}%")
+            elif output >= 0.2 and judge[1] == 0:
+                judge[1] = 1
+                await update.message.reply_text(f"Download progress: {round(output * 100, 2)}%")
+        await asyncio.sleep(5)
+        if await my_is_complete(update, context, download) == 'error':
+            await update.message.reply_text(f"Download error: {download.name}")
+            return 'error'
+        if await my_is_complete(update, context, download) == 'complete':
+            print(f'{download.dir}/{download.name}')
+            await update.message.reply_text(f"Download complete: {download.name}")
+
+            # 存储下载完成后的文件信息到上下文
+            context.user_data['download_filecontent'] = os.path.join(download.dir, download.name)
+            context.user_data['download_name'] = download.name
+
+            # 立即开始上传下载完成的文件或文件夹
+            await send_module(update, context, download)
+            return 'complete'
+    except Exception as e:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in report module: {str(e)}")
+        raise
+
+async def progress_callback(current, total, chat_id, file_path, context):
+    progress_percentage = round(current / total * 100, 2)
+    last_reported_progress = context.user_data.get('last_reported_progress', 0)
+    context.user_data['upload_progress'] = {
+        'file_name': os.path.basename(file_path),
+        'progress': progress_percentage
+    }
+
+    if (int(progress_percentage) % 20 == 0 and int(progress_percentage) > last_reported_progress) or int(progress_percentage) == 100:
+        context.user_data['last_reported_progress'] = int(progress_percentage)
+        progress_message = f"Uploading {os.path.basename(file_path)}: {progress_percentage}% completed."
+        await rbot.send_message(chat_id=chat_id, text=progress_message)
+
+async def send_file_or_split(app, chat_id, file_path, context):
+    try:
+        file_size = os.path.getsize(file_path)
+        if file_size <= BIG_FILE_LIMIT:
+            await app.send_document(chat_id, file_path, progress=progress_callback, progress_args=(chat_id, file_path, context))
+        else:
+            part_size = BIG_FILE_LIMIT - (1 * 1024 * 1024)
+            parts = await split_file(file_path, part_size)
+            for part in parts:
+                await app.send_document(chat_id, part, progress=progress_callback, progress_args=(chat_id, part, context))
+                os.remove(part)
+            await app.send_message(chat_id, "All parts sent successfully.")
+    except Exception as e:
+        await app.send_message(chat_id, f"Failed to send file: {str(e)}")
+
+async def send_module(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
+    try:
+        chat_id = update.effective_chat.id
+        download_filecontent = context.user_data.get('download_filecontent')
+
+        async with Client("my_account", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True) as app:
+            if os.path.isfile(download_filecontent):
+                await send_file_or_split(app, chat_id, download_filecontent, context)
+            elif os.path.isdir(download_filecontent):
+                zip_filename = f"{download_filecontent}.zip"
+                shutil.make_archive(download_filecontent, 'zip', download_filecontent)
+                await send_file_or_split(app, chat_id, zip_filename, context)
+            else:
+                await update.message.reply_text(f"{context.user_data['download_name']} sent failed. File not found.")
+    except NetworkError as e:
+        await update.message.reply_text(f"Failed sending: {str(e)}")
+    except Exception as e:
+        await update.message.reply_text(f"An error occurred while sending: {str(e)}")
+
+async def handle_magnet_download(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
+    try:
+        if download.is_metadata:
+            # 获取下载的目录或文件路径
+            download_file_path = os.path.join(download.dir, download.name)
+            
+            # 检查并删除已存在的文件或目录
+            if os.path.exists(download_file_path):
+                await update.message.reply_text(f"Found existing download content for {download.name}. Deleting it before starting new download...")
+                
+                if os.path.isdir(download_file_path):
+                    shutil.rmtree(download_file_path)  # 删除整个目录
+                elif os.path.isfile(download_file_path):
+                    os.remove(download_file_path)  # 删除文件
+
+            await update.message.reply_text("Downloading metadata...")
+            while not download.is_complete:
+                await asyncio.sleep(1)
+                download.update()
+            
+            if download.followed_by_ids:
+                real_download_gid = download.followed_by_ids[0]
+                real_download = aria2.get_download(real_download_gid)
+                context.user_data['download_gid'] = real_download.gid
+
+                await update.message.reply_text(f"Metadata downloaded. Starting actual download: {real_download.name}")
+                
+                asyncio.create_task(report_module(update, context, real_download))
+            else:
+                await update.message.reply_text("Failed to retrieve real download after metadata.")
+        else:
+            await update.message.reply_text(f"Starting download: {download.name}")
+            asyncio.create_task(report_module(update, context, download))
+    except Exception as e:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in handling magnet download: {str(e)}")
+        raise
+
+
+async def download_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         message = update.message.text
-        
         if message and (message.startswith("http://") or message.startswith("https://")):
-            download = aria2.add(message)[0]
+            dl_list = aria2.add(message)
+            download = dl_list[0] 
             context.user_data['download_gid'] = download.gid
             await update.message.reply_text(f"Added URI download: {download.name}")
+            asyncio.create_task(report_module(update, context, download))
+            asyncio.create_task(send_module(update, context, download))
 
-        elif message and (message.startswith("magnet:")):
-            download = aria2.add(message)[0]
+        elif message and message.startswith("magnet:"):
+            context.user_data['magnet_uri'] = message  # 存储磁力链接
+            download = aria2.add_magnet(message)
             context.user_data['download_gid'] = download.gid
-            await update.message.reply_text(f"Added Magnet download: {download.name}")
+            await handle_magnet_download(update, context, download)
 
         elif update.message.document and update.message.document.file_name.endswith(".torrent"):
             file = await context.bot.get_file(update.message.document.file_id)
@@ -138,174 +271,14 @@ async def download_module(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await file.download_to_drive(file_path)
             download = aria2.add_torrent(file_path)
             context.user_data['download_gid'] = download.gid
-            await update.message.reply_text(f"Added Torrent download: {download.name}")
-
+            await handle_magnet_download(update, context, download)
         else:
-            await update.message.reply_text(
-                "Unrecognized link or file. Please send a valid URI, magnet link, or torrent file.")
-            return
-        return download
+            await update.message.reply_text("Unrecognized link or file. Please send a valid URI, magnet link, or torrent file.")
     except Exception as e:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in download module: {str(e)}")
         raise
 
 
-async def report_module(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download) :
-    try:
-        judge=[0,0,0,0,0]
-        while await my_is_complete(update, context, download)=='active':
-            pl = mc.tell_status(download.gid, ['totalLength', 'completedLength'])
-            await asyncio.sleep(3)
-            output=0
-            if int(pl['totalLength']) != 0 :
-                output = int(pl['completedLength']) / int(pl['totalLength'])
-            
-            print(output)
-            if output == 1.0:
-                #await update.message.reply_text(f"Download complete")
-                break
-            elif output >= 0.8 and judge[4]==0:
-                judge[4]=1
-                await update.message.reply_text(f"Download progress: {round(output*100,2)}%")
-            elif output >= 0.6 and judge[3]==0:
-                judge[3]=1
-                await update.message.reply_text(f"Download progress: {round(output*100,2)}%")
-            elif output >= 0.4 and judge[2]==0:
-                judge[2]=1
-                await update.message.reply_text(f"Download progress: {round(output*100,2)}%")
-            elif output >= 0.2 and judge[1]==0:
-                judge[1]=1
-                await update.message.reply_text(f"Download progress: {round(output*100,2)}%")
-        await asyncio.sleep(5)
-        if await my_is_complete(update, context, download)=='error':
-            await update.message.reply_text(f"Download error")
-            return 'error'
-        if await my_is_complete(update, context, download)=='complete':
-            await update.message.reply_text(f"Download complete")
-
-            return 'complete'
-    except Exception as e:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in report module: {str(e)}")
-        raise
-
-
-
-
-
-
-
-
-##################得针对每一个dl_list分别发送
-async def send_module(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download, output_dir: str):
-    try:
-        while True:
-            if await my_is_complete(update,context,download)=='complete':
-                downloaded_filename = os.path.join(download.dir, download.name)
-                chat_id = update.effective_chat.id
-                fl=download.files[0].is_metadata
-                meta_download_name=None
-                if fl:
-                    #对于metadata
-                    meta_download_name=download.name.removeprefix('[METADATA]')#目录名
-                    metadata_downloaded_filename = os.path.join(download.dir, meta_download_name)#目录所在的完整路径名
-                    zip_filename = f"{metadata_downloaded_filename}.zip"
-                    zip_filepath = os.path.join(output_dir, zip_filename)
-                    #把这个目录里的文件全压缩成一个文件，测试无误
-                    with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                        for root, dirs, files in os.walk(metadata_downloaded_filename):
-                            for file in files:
-                                file_path = os.path.join(root, file)
-                                arcname = os.path.relpath(file_path, start=metadata_downloaded_filename)
-                                zipf.write(file_path, arcname=arcname)
-
-
-
-                    #发送压缩后的文件
-                    zip_filesize=os.path.getsize(zip_filename)
-                    big_file_limit = 45 * 1024 * 1024  # 45 MB
-                    if zip_filesize<=big_file_limit:
-                        with open(zip_filename,'rb') as file:
-                            await context.bot.send_document(chat_id=chat_id, document=file)
-                    else:
-                        part_size = big_file_limit - (1 * 1024 * 1024)
-                        parts=await split_file(zip_filename,part_size,output_dir)
-                        for part in parts:
-                            with open(part, 'rb') as file:
-                                await context.bot.send_document(chat_id=chat_id, document=file)
-                            os.remove(part)
-                        await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
-
-
-                elif os.path.isdir(downloaded_filename):
-                    
-                    # 如果是目录，压缩整个目录
-                    zip_filename = f"{download.name}.zip"
-                    zip_filepath = os.path.join(output_dir, zip_filename)
-                    with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                        for root, dirs, files in os.walk(downloaded_filename):
-                            for file in files:
-                                file_path = os.path.join(root, file)
-                                arcname = os.path.relpath(file_path, start=downloaded_filename)
-                                zipf.write(file_path, arcname=arcname)
-                    # 发送压缩后的文件
-                    zip_filesize=os.path.getsize(zip_filename)
-                    big_file_limit = 45 * 1024 * 1024  # 45 MB
-                    if zip_filesize<=big_file_limit:
-                        with open(zip_filename,'rb') as file:
-                            await context.bot.send_document(chat_id=chat_id, document=file)
-                    else:
-                        part_size = big_file_limit - (1 * 1024 * 1024)
-                        parts=await split_file(zip_filename,part_size,output_dir)
-                        for part in parts:
-                            with open(part, 'rb') as file:
-                                await context.bot.send_document(chat_id=chat_id, document=file)
-                            os.remove(part)
-                        await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
-                else:
-                    # 如果是文件，直接发送或拆分后发送
-                    file_size = os.path.getsize(downloaded_filename)
-                    big_file_limit = 45 * 1024 * 1024  # 45 MB
-
-                    if file_size <= big_file_limit:
-                        with open(downloaded_filename, 'rb') as file:
-                            await context.bot.send_document(chat_id=chat_id, document=file)
-                    else:
-                        part_size = big_file_limit - (1 * 1024 * 1024)
-                        parts = await split_file(downloaded_filename, part_size, output_dir)
-                        for part in parts:
-                            with open(part, 'rb') as file:
-                                await context.bot.send_document(chat_id=chat_id, document=file)
-                            os.remove(part)
-
-                    await context.bot.send_message(chat_id=chat_id, text="File sent successfully")
-                break
-            else:
-                await asyncio.sleep(5)
-    except NetworkError as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"Failed sending: {str(e)}")
-    except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"An error occurred: {str(e)}")
-
-
-
-async def the_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        dl = await download_module(update, context)
-        if dl:
-            asyncio.create_task(report_module(update, context, dl))  # Run report_module asynchronously
-            asyncio.create_task(send_module(update, context, dl, TMP_BUNDLE_DIR))
-
-
-
-    except Exception as e:
-
-
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in the main module: {str(e)}")
-
-
-rbot = Bot(token=BOT_TOKEN)
-uq = Queue()
-updater = Updater(bot=rbot, update_queue=uq)
 
 
 
@@ -313,18 +286,18 @@ updater = Updater(bot=rbot, update_queue=uq)
 def main() -> None:
     try:
         application = ApplicationBuilder().token(BOT_TOKEN).media_write_timeout(300.0).read_timeout(
-            READTIME_OUT).write_timeout(WRITETIME_OUT).build()
+            300.0).write_timeout(300.0).build()
         application.add_handler(CommandHandler('start', start))
         application.add_handler(CommandHandler('help', help))
         application.add_handler(CommandHandler('progress', progress))
-
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, the_module))
-        application.add_handler(MessageHandler(filters.Document.ALL, the_module))
+        application.add_handler(CommandHandler('upload_progress', upload_progress))
+        application.add_handler(CommandHandler('get_chat_id', get_chat_id))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_module))
+        application.add_handler(MessageHandler(filters.Document.ALL, download_module))
         
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         print(f"Failed to start the bot: {str(e)}")
-
 
 if __name__ == '__main__':
     main()
