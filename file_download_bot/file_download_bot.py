@@ -212,16 +212,16 @@ async def send_module(update: Update, context: ContextTypes.DEFAULT_TYPE, downlo
 
 import subprocess
 
-def delete_with_sudo(path):
-    try:
-        # 使用sudo执行删除命令
-        if os.path.isdir(path):
-            subprocess.run(['sudo', 'rm', '-rf', path], check=True)
-        elif os.path.isfile(path):
-            subprocess.run(['sudo', 'rm', '-f', path], check=True)
-        print(f"Successfully deleted: {path}")
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to delete {path}: {e}")
+# def delete_with_sudo(path):
+#     try:
+#         # 使用sudo执行删除命令
+#         if os.path.isdir(path):
+#             subprocess.run(['sudo', 'rm', '-rf', path], check=True)
+#         elif os.path.isfile(path):
+#             subprocess.run(['sudo', 'rm', '-f', path], check=True)
+#         print(f"Successfully deleted: {path}")
+#     except subprocess.CalledProcessError as e:
+#         print(f"Failed to delete {path}: {e}")
 
 async def handle_magnet_download(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
     try:
@@ -231,31 +231,77 @@ async def handle_magnet_download(update: Update, context: ContextTypes.DEFAULT_T
             while not download.is_complete:
                 await asyncio.sleep(1)
                 download.update()
-            
+            # #######################################################
+            # # 使用 tell_active 获取所有活动任务
+            # active_downloads = mc.tell_active()
+            # completed_download = None
+            # for dl in active_downloads:
+            #     if dl['gid']==download.gid:
+            #         continue
+            #     if download.info_hash==dl['infoHash']:
+            #         completed_download=dl
+            #         break
+            #     if completed_download:
+            #         break
+
+            # ##当存在可绑定已有任务的情况
+            # if completed_download:
+            #     rm_list=[download.gid]
+            #     download.remove()
+            #     context.user_data['download_gid'] = completed_download['gid']
+            #     await update.message.reply_text( f"Found an existing active download for {completed_download['name']}. " f"Binding current request to this download.")
+            #     asyncio.create_task(report_module(update, context, completed_download))
+            # #################################################################
+            #####正常处理
             if download.followed_by_ids:
                 real_download_gid = download.followed_by_ids[0]
                 real_download = aria2.get_download(real_download_gid)
                 context.user_data['download_gid'] = real_download.gid
 
                 await update.message.reply_text(f"Metadata downloaded. Starting actual download: {real_download.name}")
-
+                #################################################################################################
                 # 检查实际下载任务的状态
+                ##考虑在删除的部分添加绑定任务的的代码，但这次是寻找status为complete的
                 download_status = await my_is_complete(update, context, real_download)
 
                 if download_status == 'error':
-                    real_download_path = os.path.join(real_download.dir, real_download.name)
+                    # real_download_path = os.path.join(real_download.dir, real_download.name)
                     
-                    # 检查并删除已存在的文件或目录
-                    if os.path.exists(real_download_path):
-                        await update.message.reply_text(f"Download failed with error. Found existing download content for {real_download.name}. Deleting it and retrying...")
+                    # # 检查并删除已存在的文件或目录
+                    # if os.path.exists(real_download_path):
+                    #     await update.message.reply_text(f"Download failed with error. Found existing download content for {real_download.name}. Deleting it and retrying...")
                         
-                        # 使用带有 sudo 权限的删除操作
-                        delete_with_sudo(real_download_path)
+                    #     # 使用带有 sudo 权限的删除操作,删出事了，后面重新添加的时候会绑定到已经完成的这个任务上面
+                    #     delete_with_sudo(real_download_path)
 
-                    # 重新添加下载任务
-                    new_download = aria2.add_magnet(context.user_data['magnet_uri'])
-                    context.user_data['download_gid'] = new_download.gid
-                    await handle_magnet_download(update, context, new_download)
+                    # # 重新添加下载任务
+                    # new_download = aria2.add_magnet(context.user_data['magnet_uri'])
+                    # context.user_data['download_gid'] = new_download.gid
+                    # await handle_magnet_download(update, context, new_download)
+                    #######################################################
+                    # 使用 tell_active 获取所有活动任务
+                    active_downloads = aria2.get_downloads()
+                    completed_download = None
+                    for dl in active_downloads:
+                        if dl.status=='complete':
+                            if dl.gid==download.gid:
+                                continue
+                            if download.info_hash==dl.info_hash:
+                                completed_download=dl
+                                break
+                            if completed_download:
+                                break
+
+                    ##当存在可绑定已有任务的情况
+                    if completed_download:
+                        download.remove()
+                        context.user_data['download_gid'] = completed_download.gid
+                        await update.message.reply_text( f"Found an existing active download for {completed_download.name}. " f"Binding current request to this download.")
+                        asyncio.create_task(report_module(update, context, completed_download))
+                    #################################################################
+                    else:
+                        await update.message.reply_text("Download.status==error.")
+                ###############################################################################################3
                 else:
                     asyncio.create_task(report_module(update, context, real_download))
             else:
