@@ -295,15 +295,20 @@ async def handle_magnet_download(update: Update, context: ContextTypes.DEFAULT_T
                     ##当存在可绑定已有任务的情况
                     if completed_download:
                         download.remove()
+                        print(completed_download.is_metadata)#不成功时是false，成功时True
+                        if completed_download.is_metadata:
+                            real_complete_downloadid = completed_download.followed_by_ids[0]
+                            real_complete_download = aria2.get_download(real_complete_downloadid)
 
-                        real_complete_downloadid = completed_download.followed_by_ids[0]
-                        real_complete_download = aria2.get_download(real_complete_downloadid)
 
 
-
-                        context.user_data['download_gid'] = real_complete_download.gid
-                        await update.message.reply_text( f"Found an existing active download for {real_complete_download}. " f"Binding current request to this download.")
-                        asyncio.create_task(report_module(update, context, real_complete_download))
+                            context.user_data['download_gid'] = real_complete_download.gid
+                            await update.message.reply_text( f"Found an existing active download for {real_complete_download}. " f"Binding current request to this download.")
+                            asyncio.create_task(report_module(update, context, real_complete_download))
+                        else:
+                            context.user_data['download_gid'] = completed_download.gid
+                            await update.message.reply_text( f"Found an existing active download for {completed_download}. " f"Binding current request to this download.")
+                            asyncio.create_task(report_module(update, context, completed_download))
 
                     #################################################################
                     else:
