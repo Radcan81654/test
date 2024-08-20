@@ -30,6 +30,10 @@ BIG_FILE_LIMIT = 2*1024*1024*1024  # 2GB
 API_ID = '22556263'
 API_HASH = '1a470fb798c07cb0ad5c8c69485bdd18'
 
+ALLOWED_USER_IDS = [7281421323]  # 替换为实际的用户ID列表
+
+
+
 mc = aria2p.Client(
     host=ARIA2_RPC_IP,
     port=ARIA2_RPC_PORT,
@@ -39,25 +43,31 @@ aria2 = aria2p.API(mc)
 
 rbot = Bot(token=BOT_TOKEN)
 
+
+
+async def check_user_permission(update: Update) -> bool:
+    user_id = update.effective_user.id
+    if user_id in ALLOWED_USER_IDS:
+        return True
+    await update.message.reply_text("You are not authorized to use this bot.")
+    return False
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await check_user_permission(update):
+        return
     commands = [
         BotCommand("start", "Start the bot"),
-        BotCommand("help", "Get help"),
         BotCommand("progress", "Check download progress"),
-        BotCommand("upload_progress", "Check upload progress"),
         BotCommand("get_chat_id", "Get the chat ID of the current chat.")
     ]
     await rbot.set_my_commands(commands)
     await update.message.reply_text('Hello! Send me a BT seed file / link.')
 
-async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        'I will download the file for you and send it to this chat. \n'
-        'Due to platform limitations, I can only send it in parts of less than 2GB each.\n'
-        'I will keep you updated on the progress.'
-    )
+
 
 async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await check_user_permission(update):
+        return
     cid = update.effective_chat.id
     pgid = context.user_data.get('download_gid')
     try:
@@ -70,39 +80,13 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await update.message.reply_text(f"Failed to check progress: {str(e)}")
 
-async def upload_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    upload_info = context.user_data.get('upload_progress')
-    if upload_info:
-        await update.message.reply_text(
-            f"Uploading {upload_info['file_name']}: {upload_info['progress']}% completed."
-        )
-    else:
-        await update.message.reply_text("No upload in progress or progress information is not available.")
+
 
 async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     await update.message.reply_text(f'This group chat ID is: {chat_id}')
 
-async def split_file(file_path, part_size):
-    file_size = os.path.getsize(file_path)
-    base_filename = os.path.basename(file_path)
-    part_number = 1
-    parts = []
 
-    os.makedirs(TMP_BUNDLE_DIR, exist_ok=True)
-
-    async with aiofiles.open(file_path, 'rb') as src_file:
-        while True:
-            chunk = await src_file.read(part_size)
-            if not chunk:
-                break
-            part_filename = f"{base_filename}.part{part_number}.zip"
-            part_path = os.path.join(TMP_BUNDLE_DIR, part_filename)
-            parts.append(part_path)
-            with zipfile.ZipFile(part_path, 'w', zipfile.ZIP_DEFLATED) as part_file:
-                part_file.writestr(base_filename, chunk)
-            part_number += 1
-    return parts
 
 async def my_is_complete(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
     try:
@@ -152,76 +136,12 @@ async def report_module(update: Update, context: ContextTypes.DEFAULT_TYPE, down
             print(f'{download.dir}/{download.name}')
             await update.message.reply_text(f"Download complete: {download.name}")
 
-            # 存储下载完成后的文件信息到上下文
-            context.user_data['download_filecontent'] = os.path.join(download.dir, download.name)
-            context.user_data['download_name'] = download.name
-
-            # 立即开始上传下载完成的文件或文件夹
-            await send_module(update, context, download)
-            return 'complete'
     except Exception as e:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Error in report module: {str(e)}")
         raise
 
-async def progress_callback(current, total, chat_id, file_path, context):
-    progress_percentage = round(current / total * 100, 2)
-    last_reported_progress = context.user_data.get('last_reported_progress', 0)
-    context.user_data['upload_progress'] = {
-        'file_name': os.path.basename(file_path),
-        'progress': progress_percentage
-    }
 
-    if (int(progress_percentage) % 20 == 0 and int(progress_percentage) > last_reported_progress) or int(progress_percentage) == 100:
-        context.user_data['last_reported_progress'] = int(progress_percentage)
-        progress_message = f"Uploading {os.path.basename(file_path)}: {progress_percentage}% completed."
-        await rbot.send_message(chat_id=chat_id, text=progress_message)
 
-async def send_file_or_split(app, chat_id, file_path, context):
-    try:
-        file_size = os.path.getsize(file_path)
-        if file_size <= BIG_FILE_LIMIT:
-            await app.send_document(chat_id, file_path, progress=progress_callback, progress_args=(chat_id, file_path, context))
-        else:
-            part_size = BIG_FILE_LIMIT - (1 * 1024 * 1024)
-            parts = await split_file(file_path, part_size)
-            for part in parts:
-                await app.send_document(chat_id, part, progress=progress_callback, progress_args=(chat_id, part, context))
-                os.remove(part)
-            await app.send_message(chat_id, "All parts sent successfully.")
-    except Exception as e:
-        await app.send_message(chat_id, f"Failed to send file: {str(e)}")
-
-async def send_module(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
-    try:
-        chat_id = update.effective_chat.id
-        download_filecontent = context.user_data.get('download_filecontent')
-
-        async with Client("my_account", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True) as app:
-            if os.path.isfile(download_filecontent):
-                await send_file_or_split(app, chat_id, download_filecontent, context)
-            elif os.path.isdir(download_filecontent):
-                zip_filename = f"{download_filecontent}.zip"
-                shutil.make_archive(download_filecontent, 'zip', download_filecontent)
-                await send_file_or_split(app, chat_id, zip_filename, context)
-            else:
-                await update.message.reply_text(f"{context.user_data['download_name']} sent failed. File not found.")
-    except NetworkError as e:
-        await update.message.reply_text(f"Failed sending: {str(e)}")
-    except Exception as e:
-        await update.message.reply_text(f"An error occurred while sending: {str(e)}")
-
-import subprocess
-
-# def delete_with_sudo(path):
-#     try:
-#         # 使用sudo执行删除命令
-#         if os.path.isdir(path):
-#             subprocess.run(['sudo', 'rm', '-rf', path], check=True)
-#         elif os.path.isfile(path):
-#             subprocess.run(['sudo', 'rm', '-f', path], check=True)
-#         print(f"Successfully deleted: {path}")
-#     except subprocess.CalledProcessError as e:
-#         print(f"Failed to delete {path}: {e}")
 
 async def handle_magnet_download(update: Update, context: ContextTypes.DEFAULT_TYPE, download: Download):
     try:
@@ -231,55 +151,15 @@ async def handle_magnet_download(update: Update, context: ContextTypes.DEFAULT_T
             while not download.is_complete:
                 await asyncio.sleep(1)
                 download.update()
-            # #######################################################
-            # # 使用 tell_active 获取所有活动任务
-            # active_downloads = mc.tell_active()
-            # completed_download = None
-            # for dl in active_downloads:
-            #     if dl['gid']==download.gid:
-            #         continue
-            #     if download.info_hash==dl['infoHash']:
-            #         completed_download=dl
-            #         break
-            #     if completed_download:
-            #         break
-
-            # ##当存在可绑定已有任务的情况
-            # if completed_download:
-            #     rm_list=[download.gid]
-            #     download.remove()
-            #     context.user_data['download_gid'] = completed_download['gid']
-            #     await update.message.reply_text( f"Found an existing active download for {completed_download['name']}. " f"Binding current request to this download.")
-            #     asyncio.create_task(report_module(update, context, completed_download))
-            # #################################################################
-            #####正常处理
             if download.followed_by_ids:
                 real_download_gid = download.followed_by_ids[0]
                 real_download = aria2.get_download(real_download_gid)
                 context.user_data['download_gid'] = real_download.gid
 
                 await update.message.reply_text(f"Metadata downloaded. Starting actual download: {real_download.name}")
-                #################################################################################################
-                # 检查实际下载任务的状态
-                ##考虑在删除的部分添加绑定任务的的代码，但这次是寻找status为complete的
                 download_status = await my_is_complete(update, context, real_download)
 
                 if download_status == 'error':
-                    # real_download_path = os.path.join(real_download.dir, real_download.name)
-                    
-                    # # 检查并删除已存在的文件或目录
-                    # if os.path.exists(real_download_path):
-                    #     await update.message.reply_text(f"Download failed with error. Found existing download content for {real_download.name}. Deleting it and retrying...")
-                        
-                    #     # 使用带有 sudo 权限的删除操作,删出事了，后面重新添加的时候会绑定到已经完成的这个任务上面
-                    #     delete_with_sudo(real_download_path)
-
-                    # # 重新添加下载任务
-                    # new_download = aria2.add_magnet(context.user_data['magnet_uri'])
-                    # context.user_data['download_gid'] = new_download.gid
-                    # await handle_magnet_download(update, context, new_download)
-                    #######################################################
-                    # 使用 tell_active 获取所有活动任务
                     active_downloads = aria2.get_downloads()
                     completed_download = None
                     for dl in active_downloads:
@@ -310,10 +190,8 @@ async def handle_magnet_download(update: Update, context: ContextTypes.DEFAULT_T
                             await update.message.reply_text( f"Found an existing active download for {completed_download}. " f"Binding current request to this download.")
                             asyncio.create_task(report_module(update, context, completed_download))
 
-                    #################################################################
                     else:
                         await update.message.reply_text("Download.status==error.")
-                ###############################################################################################3
                 else:
                     asyncio.create_task(report_module(update, context, real_download))
             else:
@@ -329,6 +207,8 @@ async def handle_magnet_download(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def download_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await check_user_permission(update):
+        return  # 如果用户没有权限，退出函数
     try:
         message = update.message.text
         if message and (message.startswith("http://") or message.startswith("https://")):
@@ -337,7 +217,7 @@ async def download_module(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.user_data['download_gid'] = download.gid
             await update.message.reply_text(f"Added URI download: {download.name}")
             asyncio.create_task(report_module(update, context, download))
-            asyncio.create_task(send_module(update, context, download))
+
 
         elif message and message.startswith("magnet:"):
             context.user_data['magnet_uri'] = message  # 存储磁力链接
@@ -368,9 +248,7 @@ def main() -> None:
         application = ApplicationBuilder().token(BOT_TOKEN).media_write_timeout(300.0).read_timeout(
             300.0).write_timeout(300.0).build()
         application.add_handler(CommandHandler('start', start))
-        application.add_handler(CommandHandler('help', help))
         application.add_handler(CommandHandler('progress', progress))
-        application.add_handler(CommandHandler('upload_progress', upload_progress))
         application.add_handler(CommandHandler('get_chat_id', get_chat_id))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_module))
         application.add_handler(MessageHandler(filters.Document.ALL, download_module))
